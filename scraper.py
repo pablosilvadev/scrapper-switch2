@@ -22,22 +22,32 @@ from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
 
 import requests
 from bs4 import BeautifulSoup
+from curl_cffi import requests as cf_requests
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
 SEEN_PATH = ROOT / "seen_products.json"
 
-# Headers de navegador real. Magento/CDN a veces filtran el UA por defecto de requests.
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
+# WePlay está detrás de Cloudflare. requests “puro” desde GitHub Actions
+# (IPs de datacenter) suele recibir 403. curl_cffi imita TLS/HTTP2 de Chrome.
+BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
-    "Cache-Control": "no-cache",
 }
+
+_cf_session: cf_requests.Session | None = None
+
+
+def browser_session() -> cf_requests.Session:
+    """Sesión reutilizable que imita Chrome (TLS fingerprint, no solo User-Agent)."""
+    global _cf_session
+    if _cf_session is None:
+        _cf_session = cf_requests.Session(impersonate="chrome")
+        try:
+            _cf_session.get("https://www.weplay.cl/", headers=BROWSER_HEADERS, timeout=20)
+        except cf_requests.RequestsError:
+            logging.warning("No se pudo hacer warmup a la home de WePlay; se sigue igual.")
+    return _cf_session
 
 # ---------------------------------------------------------------------------
 # Selectores Magento 2 + tema Porto (inspeccionados en weplay.cl/preventas.html)
@@ -147,22 +157,33 @@ def with_query(url: str, extra: dict[str, str]) -> str:
 
 def fetch_html(url: str, timeout: int, max_retries: int, backoff: int) -> str:
     last_error: Exception | None = None
+    session = browser_session()
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.get(url, headers=HEADERS, timeout=timeout)
+            response = session.get(url, headers=BROWSER_HEADERS, timeout=timeout)
+            cache = response.headers.get("cf-cache-status", "?")
+            mitigated = response.headers.get("cf-mitigated", "")
             if response.status_code != 200:
                 logging.warning(
-                    "Intento %s/%s: HTTP %s en %s",
+                    "Intento %s/%s: HTTP %s en %s (cf-cache=%s cf-mitigated=%s)",
                     attempt,
                     max_retries,
                     response.status_code,
                     url,
+                    cache,
+                    mitigated or "-",
                 )
-                last_error = RuntimeError(f"HTTP {response.status_code}")
+                hint = f"HTTP {response.status_code}"
+                if response.status_code == 403:
+                    hint += (
+                        " — Cloudflare bloqueó la IP (típico de GitHub Actions). "
+                        "Si persiste tras reintentar, el runner de GitHub está en lista negra."
+                    )
+                last_error = RuntimeError(hint)
             else:
-                response.encoding = response.apparent_encoding or "utf-8"
+                logging.info("HTTP 200 (cf-cache=%s) %s", cache, url)
                 return response.text
-        except requests.RequestException as exc:
+        except cf_requests.RequestsError as exc:
             logging.warning("Intento %s/%s falló (%s): %s", attempt, max_retries, url, exc)
             last_error = exc
         if attempt < max_retries:
@@ -231,10 +252,12 @@ def scrape_all_pages(config: dict[str, Any]) -> list[dict[str, str]]:
     seen_urls: set[str] = set()
 
     for page in range(1, max_pages + 1):
-        page_url = with_query(
-            base_url,
-            {"product_list_limit": limit, "p": str(page)},
-        )
+        # Página 1 sin query: Cloudflare suele servirla desde caché (HIT).
+        # product_list_limit/p fuerzan BYPASS al origen y disparan más 403.
+        if page == 1:
+            page_url = base_url
+        else:
+            page_url = with_query(base_url, {"product_list_limit": limit, "p": str(page)})
         logging.info("Descargando página %s: %s", page, page_url)
         html = fetch_html(page_url, timeout, retries, backoff)
         products = parse_products(html, base_url)
