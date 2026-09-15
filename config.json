@@ -1,0 +1,32 @@
+{
+  "target_url": "https://www.weplay.cl/preventas.html",
+  "product_list_limit": 36,
+  "max_pages": 10,
+  "interval_minutes": 30,
+  "request_timeout_seconds": 25,
+  "max_retries": 3,
+  "retry_backoff_seconds": 5,
+  "keywords": [
+    "consola zelda",
+    "consola switch 2 zelda",
+    "the legend of zelda",
+    "zelda 40th",
+    "zelda aniversario",
+    "40th aniversario",
+    "40 aniversario",
+    "40th anniversary",
+    "zelda edition",
+    "edicion zelda",
+    "edición zelda",
+    "zelda edicion",
+    "switch 2 zelda",
+    "zelda switch 2"
+  ],
+  "exclude_keywords": [
+    "ocarina",
+    "tears of the kingdom",
+    "echoes of wisdom",
+    "breath of the wild",
+    "majora"
+  ]
+}

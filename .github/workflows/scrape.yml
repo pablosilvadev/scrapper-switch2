@@ -1,0 +1,49 @@
+name: WePlay preventas scraper
+
+on:
+  schedule:
+    # UTC. Cada 30 min; GitHub puede atrasarlo unos minutos y está bien.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+        run: python scraper.py
+
+      - name: Persist seen_products.json
+        run: |
+          if [ ! -f seen_products.json ]; then
+            echo "seen_products.json no existe; nada que persistir"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add seen_products.json
+          if git diff --staged --quiet; then
+            echo "Sin cambios en seen_products.json"
+          else
+            git commit -m "chore: actualizar seen_products.json"
+            git push
+          fi
