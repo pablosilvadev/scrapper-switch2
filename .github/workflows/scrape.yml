@@ -1,9 +1,6 @@
 name: WePlay preventas scraper
 
 on:
-  schedule:
-    # UTC. Cada 30 min; GitHub puede atrasarlo unos minutos y está bien.
-    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
