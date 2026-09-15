@@ -1,6 +1,9 @@
 name: WePlay preventas scraper
 
 on:
+  schedule:
+    # 13:00 UTC ≈ 9:00–10:00 Chile. Una vez al día (plan ZenRows Free).
+    - cron: "0 13 * * *"
   workflow_dispatch:
 
 permissions:
@@ -9,6 +12,7 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,6 +31,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          ZENROWS_API_KEY: ${{ secrets.ZENROWS_API_KEY }}
         run: python scraper.py
 
       - name: Persist seen_products.json
