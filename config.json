@@ -1,10 +1,10 @@
 {
   "target_url": "https://www.weplay.cl/preventas.html",
   "product_list_limit": 36,
-  "max_pages": 10,
-  "interval_minutes": 30,
-  "request_timeout_seconds": 25,
-  "max_retries": 3,
+  "max_pages": 1,
+  "interval_minutes": 1440,
+  "request_timeout_seconds": 90,
+  "max_retries": 2,
   "retry_backoff_seconds": 5,
   "keywords": [
     "consola zelda",

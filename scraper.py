@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Scraper de preventas WePlay (Magento) para alertar coincidencias nuevas.
 
-Pensado para correr de forma puntual (local o GitHub Actions). El intervalo
-real lo define el cron del workflow, no este script.
+En GitHub Actions el fetch va por ZenRows (plan Free, sin tarjeta) porque
+Cloudflare challengea las IPs de datacenter. En local, sin API key, se
+descarga directo.
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ from curl_cffi import requests as cf_requests
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
 SEEN_PATH = ROOT / "seen_products.json"
+ENV_PATH = ROOT / ".env"
+ZENROWS_ENDPOINT = "https://api.zenrows.com/v1/"
 
 # WePlay está detrás de Cloudflare. requests “puro” desde GitHub Actions
 # (IPs de datacenter) suele recibir 403. curl_cffi imita TLS/HTTP2 de Chrome.
@@ -87,6 +90,25 @@ def setup_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+
+def load_env_file() -> None:
+    """Carga .env local. No pisa variables ya definidas (p. ej. GitHub Secrets)."""
+    if not ENV_PATH.exists():
+        return
+    for raw in ENV_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def zenrows_api_key() -> str:
+    return os.getenv("ZENROWS_API_KEY", "").strip()
 
 
 def load_config() -> dict[str, Any]:
@@ -155,8 +177,46 @@ def with_query(url: str, extra: dict[str, str]) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
+def fetch_via_zenrows(url: str, timeout: int) -> str:
+    """Baja el HTML por ZenRows (residencial + stealth). Plan Free: 5000 créditos/mes.
+
+    mode=auto usa JS/proxy solo si hace falta. 1 corrida/día cabe de sobra
+    (peor caso ~25 créditos vs 5000).
+    """
+    params = {
+        "apikey": zenrows_api_key(),
+        "url": url,
+        "mode": "auto",
+        "proxy_country": "cl",
+        "wait_for": "ol.product-items",
+        "original_status": "true",
+    }
+    response = requests.get(ZENROWS_ENDPOINT, params=params, timeout=timeout)
+    cost = response.headers.get("X-Request-Cost", "?")
+    logging.info("ZenRows HTTP %s cost=%s id=%s", response.status_code, cost, response.headers.get("X-Request-Id", "-"))
+    if response.status_code != 200:
+        raise RuntimeError(f"ZenRows HTTP {response.status_code}: {response.text[:400]}")
+    text = response.text
+    head = text[:2500].lower()
+    if "just a moment" in head or "cf-mitigated" in head:
+        raise RuntimeError("ZenRows devolvió el challenge de Cloudflare, no el HTML de WePlay.")
+    return text
+
+
 def fetch_html(url: str, timeout: int, max_retries: int, backoff: int) -> str:
-    last_error: Exception | None = None
+    if zenrows_api_key():
+        last_error: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return fetch_via_zenrows(url, timeout)
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("ZenRows intento %s/%s: %s", attempt, max_retries, exc)
+                last_error = exc
+                if attempt < max_retries:
+                    time.sleep(backoff * attempt)
+        raise RuntimeError(f"No se pudo descargar {url} via ZenRows: {last_error}")
+
+    last_error = None
     session = browser_session()
     for attempt in range(1, max_retries + 1):
         try:
@@ -176,8 +236,8 @@ def fetch_html(url: str, timeout: int, max_retries: int, backoff: int) -> str:
                 hint = f"HTTP {response.status_code}"
                 if response.status_code == 403:
                     hint += (
-                        " — Cloudflare bloqueó la IP (típico de GitHub Actions). "
-                        "Si persiste tras reintentar, el runner de GitHub está en lista negra."
+                        " — Cloudflare bloqueó la IP. En Actions usa ZENROWS_API_KEY "
+                        "(plan Free en zenrows.com, sin tarjeta)."
                     )
                 last_error = RuntimeError(hint)
             else:
@@ -347,8 +407,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     setup_logging()
+    load_env_file()
     args = parse_args()
     logging.info("Inicio de ejecución (dry_run=%s).", args.dry_run)
+
+    if os.getenv("GITHUB_ACTIONS") and not zenrows_api_key():
+        logging.error(
+            "En GitHub Actions hace falta el secret ZENROWS_API_KEY "
+            "(cuenta Free en https://www.zenrows.com/ — sin tarjeta)."
+        )
+        return 1
 
     try:
         config = load_config()
